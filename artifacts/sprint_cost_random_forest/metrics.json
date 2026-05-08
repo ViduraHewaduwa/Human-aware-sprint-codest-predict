@@ -1,0 +1,45 @@
+{
+  "data_path": "Dataset/final_agile_dataset.csv",
+  "rows": 3602,
+  "columns": [
+    "team_id",
+    "sprint_id",
+    "total_tasks",
+    "team_size",
+    "planned_story_points",
+    "completed_story_points",
+    "total_effort_minutes",
+    "total_time_spent",
+    "sprint_number",
+    "historical_velocity_avg",
+    "developer_availability_rate",
+    "absence_days_total",
+    "overtime_hours_total",
+    "concurrent_assignments",
+    "skill_match_ratio",
+    "avg_seniority_level",
+    "actual_sprint_cost"
+  ],
+  "target": "actual_sprint_cost",
+  "train_rows": 2881,
+  "test_rows": 721,
+  "selected_model": "random_forest",
+  "random_forest_params": {
+    "n_estimators": 400,
+    "min_samples_leaf": 2,
+    "min_samples_split": 4,
+    "random_state": 42
+  },
+  "cross_validation": {
+    "cv_rmse_mean": 7556.839861287195,
+    "cv_rmse_std": 7738.959108794617,
+    "cv_mae_mean": 864.6116467235252,
+    "cv_r2_mean": 0.9843943429832438
+  },
+  "test_metrics": {
+    "mae": 1357.8033002302934,
+    "rmse": 22396.83144362625,
+    "r2": 0.9443797028214049,
+    "mape": 2.449947125827237
+  }
+}
