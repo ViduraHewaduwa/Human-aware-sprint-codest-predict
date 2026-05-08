@@ -74,6 +74,8 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             "planned_points_per_developer",
             "planned_vs_velocity",
             "velocity_per_developer",
+            "planned_points_team_interaction",
+            "task_team_interaction",
         ],
         outlier_features=[
             "planned_story_points",
@@ -102,10 +104,16 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             "planned_points_per_developer",
             "planned_vs_velocity",
             "velocity_per_developer",
+            "planned_points_team_interaction",
+            "task_team_interaction",
             "completion_ratio",
+            "completion_gap",
+            "progress_vs_expected",
+            "remaining_points_per_developer",
             "points_completed_per_developer",
             "overtime_per_developer",
             "overtime_per_completed_point",
+            "time_spent_per_developer",
             "time_spent_per_completed_point",
         ],
         outlier_features=[
@@ -159,10 +167,26 @@ class AgileFeatureBuilder(BaseEstimator, TransformerMixin):
         data["velocity_per_developer"] = safe_divide(
             data["historical_velocity_avg"], data["team_size"]
         )
+        data["planned_points_team_interaction"] = (
+            data["planned_story_points"].astype(float) * data["team_size"].astype(float)
+        )
+        data["task_team_interaction"] = (
+            data["total_tasks"].astype(float) * data["team_size"].astype(float)
+        )
 
         if self.model_key == "mid":
             data["completion_ratio"] = safe_divide(
                 data["completed_story_points"], data["planned_story_points"]
+            )
+            data["completion_gap"] = (
+                data["planned_story_points"].astype(float)
+                - data["completed_story_points"].astype(float)
+            )
+            data["progress_vs_expected"] = safe_divide(
+                data["completed_story_points"], data["historical_velocity_avg"]
+            )
+            data["remaining_points_per_developer"] = safe_divide(
+                data["completion_gap"], data["team_size"]
             )
             data["points_completed_per_developer"] = safe_divide(
                 data["completed_story_points"], data["team_size"]
@@ -172,6 +196,9 @@ class AgileFeatureBuilder(BaseEstimator, TransformerMixin):
             )
             data["overtime_per_completed_point"] = safe_divide(
                 data["overtime_hours_total"], data["completed_story_points"]
+            )
+            data["time_spent_per_developer"] = safe_divide(
+                data["total_time_spent"], data["team_size"]
             )
             data["time_spent_per_completed_point"] = safe_divide(
                 data["total_time_spent"], data["completed_story_points"]
@@ -228,10 +255,13 @@ class LogTargetRegressor(BaseEstimator, RegressorMixin):
     def __init__(self, regressor: RandomForestRegressor):
         self.regressor = regressor
 
-    def fit(self, X, y):
+    def fit(self, X, y, sample_weight=None):
         y_series = pd.Series(y, dtype=float)
         self.regressor_ = clone(self.regressor)
-        self.regressor_.fit(X, np.log1p(y_series))
+        fit_kwargs: dict[str, object] = {}
+        if sample_weight is not None:
+            fit_kwargs["sample_weight"] = np.asarray(sample_weight, dtype=float)
+        self.regressor_.fit(X, np.log1p(y_series), **fit_kwargs)
         return self
 
     def predict(self, X):
@@ -248,6 +278,224 @@ def make_one_hot_encoder() -> OneHotEncoder:
         return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     except TypeError:
         return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+
+def build_random_forest(random_state: int) -> RandomForestRegressor:
+    return RandomForestRegressor(
+        n_estimators=300,
+        max_depth=None,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        random_state=random_state,
+        n_jobs=-1,
+    )
+
+
+def build_training_sample_weights(y: pd.Series) -> pd.Series:
+    y_series = pd.Series(y, dtype=float)
+    q80 = float(y_series.quantile(0.80))
+    q95 = float(y_series.quantile(0.95))
+    weights = np.ones(len(y_series), dtype=float)
+    weights[y_series >= q80] = 2.0
+    weights[y_series >= q95] = 4.0
+    return pd.Series(weights, index=y_series.index, dtype=float)
+
+
+class SingleModelSprintCostForecaster(BaseEstimator, RegressorMixin):
+    """Single weighted Random Forest forecaster over all sprint rows."""
+
+    def __init__(self, model_key: str, random_state: int = 42, use_sample_weights: bool = True):
+        self.model_key = model_key
+        self.random_state = random_state
+        self.use_sample_weights = use_sample_weights
+
+    def fit(self, X: pd.DataFrame, y) -> "SingleModelSprintCostForecaster":
+        spec = MODEL_SPECS[self.model_key]
+        self.feature_names_in_ = np.array(spec.raw_features, dtype=object)
+        X_df = X.loc[:, spec.raw_features].copy()
+        y_series = pd.Series(y, index=X_df.index, dtype=float)
+
+        self.feature_builder_ = AgileFeatureBuilder(model_key=self.model_key)
+        built = self.feature_builder_.fit_transform(X_df)
+        self.feature_capper_ = FeatureOutlierCapper(columns=spec.outlier_features)
+        capped = self.feature_capper_.fit_transform(built)
+        self.preprocessor_ = build_preprocessor(spec.raw_features + spec.engineered_features)
+        transformed = self.preprocessor_.fit_transform(capped)
+
+        self.model_ = LogTargetRegressor(regressor=build_random_forest(self.random_state))
+        sample_weights = (
+            build_training_sample_weights(y_series) if self.use_sample_weights else None
+        )
+        self.model_.fit(transformed, y_series, sample_weight=sample_weights)
+        self.sample_weight_summary_ = (
+            {
+                "q80_cost": float(y_series.quantile(0.80)),
+                "q95_cost": float(y_series.quantile(0.95)),
+                "max_weight": float(sample_weights.max()),
+            }
+            if sample_weights is not None
+            else None
+        )
+        return self
+
+    def _prepare_features(self, X: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+        spec = MODEL_SPECS[self.model_key]
+        X_df = X.loc[:, spec.raw_features].copy()
+        built = self.feature_builder_.transform(X_df)
+        capped = self.feature_capper_.transform(built)
+        transformed = self.preprocessor_.transform(capped)
+        return capped, transformed
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        _, transformed = self._prepare_features(X)
+        return self.model_.predict(transformed)
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        return self.model_.feature_importances_
+
+    def get_feature_importance_table(self) -> pd.DataFrame:
+        feature_names = sanitize_feature_names(self.preprocessor_.get_feature_names_out())
+        return (
+            pd.DataFrame(
+                {"feature": feature_names, "importance": self.feature_importances_}
+            )
+            .sort_values("importance", ascending=False)
+            .reset_index(drop=True)
+        )
+
+
+class SegmentedSprintCostForecaster(BaseEstimator, RegressorMixin):
+    """Route large-complexity sprints to a dedicated weighted Random Forest."""
+
+    def __init__(
+        self,
+        model_key: str,
+        random_state: int = 42,
+        large_quantile: float = 0.90,
+        use_sample_weights: bool = True,
+        min_large_rows: int = 40,
+    ):
+        self.model_key = model_key
+        self.random_state = random_state
+        self.large_quantile = large_quantile
+        self.use_sample_weights = use_sample_weights
+        self.min_large_rows = min_large_rows
+
+    def fit(self, X: pd.DataFrame, y) -> "SegmentedSprintCostForecaster":
+        spec = MODEL_SPECS[self.model_key]
+        self.feature_names_in_ = np.array(spec.raw_features, dtype=object)
+        X_df = X.loc[:, spec.raw_features].copy()
+        y_series = pd.Series(y, index=X_df.index, dtype=float)
+
+        self.feature_builder_ = AgileFeatureBuilder(model_key=self.model_key)
+        built = self.feature_builder_.fit_transform(X_df)
+        self.feature_capper_ = FeatureOutlierCapper(columns=spec.outlier_features)
+        capped = self.feature_capper_.fit_transform(built)
+        self.preprocessor_ = build_preprocessor(spec.raw_features + spec.engineered_features)
+        transformed = self.preprocessor_.fit_transform(capped)
+
+        self.routing_thresholds_ = {
+            "planned_story_points": float(capped["planned_story_points"].quantile(self.large_quantile)),
+            "total_tasks": float(capped["total_tasks"].quantile(self.large_quantile)),
+            "planned_vs_velocity": float(capped["planned_vs_velocity"].quantile(self.large_quantile)),
+        }
+        large_mask = self._build_large_mask(capped)
+        if int(large_mask.sum()) < self.min_large_rows:
+            rank_source = capped["planned_story_points"].fillna(0.0) + capped["total_tasks"].fillna(0.0)
+            top_count = min(len(rank_source), max(self.min_large_rows, int(len(rank_source) * 0.1)))
+            selected_index = rank_source.nlargest(top_count).index
+            large_mask = capped.index.isin(selected_index)
+
+        large_mask = pd.Series(large_mask, index=capped.index, dtype=bool)
+        normal_mask = ~large_mask
+        sample_weights = (
+            build_training_sample_weights(y_series) if self.use_sample_weights else None
+        )
+
+        self.normal_model_ = LogTargetRegressor(regressor=build_random_forest(self.random_state))
+        self.normal_model_.fit(
+            transformed[normal_mask.to_numpy()],
+            y_series.loc[normal_mask],
+            sample_weight=sample_weights.loc[normal_mask] if sample_weights is not None else None,
+        )
+
+        if int(large_mask.sum()) >= self.min_large_rows:
+            self.large_model_ = LogTargetRegressor(regressor=build_random_forest(self.random_state))
+            self.large_model_.fit(
+                transformed[large_mask.to_numpy()],
+                y_series.loc[large_mask],
+                sample_weight=sample_weights.loc[large_mask] if sample_weights is not None else None,
+            )
+            self.has_large_model_ = True
+        else:
+            self.large_model_ = self.normal_model_
+            self.has_large_model_ = False
+
+        self.segment_summary_ = {
+            "large_quantile": self.large_quantile,
+            "min_large_rows": self.min_large_rows,
+            "normal_rows": int(normal_mask.sum()),
+            "large_rows": int(large_mask.sum()),
+            "routing_thresholds": self.routing_thresholds_,
+            "sample_weight_summary": (
+                {
+                    "q80_cost": float(y_series.quantile(0.80)),
+                    "q95_cost": float(y_series.quantile(0.95)),
+                }
+                if sample_weights is not None
+                else None
+            ),
+        }
+        return self
+
+    def _build_large_mask(self, capped_features: pd.DataFrame) -> pd.Series:
+        return (
+            (capped_features["planned_story_points"] >= self.routing_thresholds_["planned_story_points"])
+            | (capped_features["total_tasks"] >= self.routing_thresholds_["total_tasks"])
+            | (
+                capped_features["planned_vs_velocity"].fillna(0.0)
+                >= self.routing_thresholds_["planned_vs_velocity"]
+            )
+        )
+
+    def _prepare_features(self, X: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+        spec = MODEL_SPECS[self.model_key]
+        X_df = X.loc[:, spec.raw_features].copy()
+        built = self.feature_builder_.transform(X_df)
+        capped = self.feature_capper_.transform(built)
+        transformed = self.preprocessor_.transform(capped)
+        return capped, transformed
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        capped, transformed = self._prepare_features(X)
+        large_mask = self._build_large_mask(capped).to_numpy()
+        predictions = np.zeros(len(capped), dtype=float)
+        if (~large_mask).any():
+            predictions[~large_mask] = self.normal_model_.predict(transformed[~large_mask])
+        if large_mask.any():
+            predictions[large_mask] = self.large_model_.predict(transformed[large_mask])
+        return predictions
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        normal_rows = max(1, self.segment_summary_["normal_rows"])
+        large_rows = max(1, self.segment_summary_["large_rows"])
+        total_rows = normal_rows + large_rows
+        return (
+            self.normal_model_.feature_importances_ * (normal_rows / total_rows)
+            + self.large_model_.feature_importances_ * (large_rows / total_rows)
+        )
+
+    def get_feature_importance_table(self) -> pd.DataFrame:
+        feature_names = sanitize_feature_names(self.preprocessor_.get_feature_names_out())
+        return (
+            pd.DataFrame(
+                {"feature": feature_names, "importance": self.feature_importances_}
+            )
+            .sort_values("importance", ascending=False)
+            .reset_index(drop=True)
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -475,24 +723,23 @@ def build_preprocessor(feature_columns: list[str]) -> ColumnTransformer:
     )
 
 
-def build_training_pipeline(model_key: str, random_state: int) -> Pipeline:
-    spec = MODEL_SPECS[model_key]
-    preprocessor = build_preprocessor(spec.raw_features + spec.engineered_features)
-    regressor = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=None,
-        min_samples_split=5,
-        min_samples_leaf=2,
+def build_baseline_estimator(model_key: str, random_state: int) -> SingleModelSprintCostForecaster:
+    return SingleModelSprintCostForecaster(
+        model_key=model_key,
         random_state=random_state,
-        n_jobs=-1,
+        use_sample_weights=True,
     )
-    return Pipeline(
-        steps=[
-            ("feature_builder", AgileFeatureBuilder(model_key=model_key)),
-            ("feature_capper", FeatureOutlierCapper(columns=spec.outlier_features)),
-            ("preprocessor", preprocessor),
-            ("model", LogTargetRegressor(regressor=regressor)),
-        ]
+
+
+def build_segmented_estimator(
+    model_key: str, random_state: int
+) -> SegmentedSprintCostForecaster:
+    return SegmentedSprintCostForecaster(
+        model_key=model_key,
+        random_state=random_state,
+        large_quantile=0.90,
+        use_sample_weights=True,
+        min_large_rows=40,
     )
 
 
@@ -517,7 +764,7 @@ def compute_metrics(y_true: pd.Series | np.ndarray, y_pred: pd.Series | np.ndarr
 
 
 def cross_validate_model(
-    pipeline: Pipeline, X_train: pd.DataFrame, y_train: pd.Series, groups: pd.Series, cv_folds: int
+    estimator, X_train: pd.DataFrame, y_train: pd.Series, groups: pd.Series, cv_folds: int
 ) -> dict[str, float]:
     unique_groups = int(groups.nunique())
     split_count = min(cv_folds, unique_groups)
@@ -532,7 +779,7 @@ def cross_validate_model(
         "mape": make_scorer(safe_mape, greater_is_better=False),
     }
     scores = cross_validate(
-        pipeline,
+        estimator,
         X_train,
         y_train,
         groups=groups,
@@ -604,10 +851,13 @@ def sanitize_feature_names(feature_names: np.ndarray) -> list[str]:
     return clean_names
 
 
-def extract_feature_importance(pipeline: Pipeline) -> pd.DataFrame:
-    importances = pipeline.named_steps["model"].feature_importances_
+def extract_feature_importance(model) -> pd.DataFrame:
+    if hasattr(model, "get_feature_importance_table"):
+        return model.get_feature_importance_table()
+
+    importances = model.named_steps["model"].feature_importances_
     feature_names = sanitize_feature_names(
-        pipeline.named_steps["preprocessor"].get_feature_names_out()
+        model.named_steps["preprocessor"].get_feature_names_out()
     )
     return (
         pd.DataFrame({"feature": feature_names, "importance": importances})
@@ -674,26 +924,40 @@ def save_error_distribution_plot(df: pd.DataFrame, output_path: Path) -> None:
 def save_model_artifacts(
     model_dir: Path,
     model_key: str,
-    pipeline: Pipeline,
+    model,
     feature_importance: pd.DataFrame,
-    group_holdout_predictions: pd.DataFrame,
-    time_holdout_predictions: pd.DataFrame,
+    scenario_frames: dict[str, pd.DataFrame],
     metrics_payload: dict[str, object],
 ) -> None:
     model_dir.mkdir(parents=True, exist_ok=True)
 
     (model_dir / "metrics.json").write_text(json.dumps(metrics_payload, indent=2))
-    group_holdout_predictions.to_csv(model_dir / "holdout_predictions.csv", index=False)
-    group_holdout_predictions.to_csv(model_dir / "group_holdout_predictions.csv", index=False)
-    time_holdout_predictions.to_csv(model_dir / "time_holdout_predictions.csv", index=False)
+    for frame_name, frame in scenario_frames.items():
+        frame.to_csv(model_dir / f"{frame_name}.csv", index=False)
+    scenario_frames["group_holdout_segmented_predictions"].to_csv(
+        model_dir / "holdout_predictions.csv", index=False
+    )
+    scenario_frames["group_holdout_segmented_predictions"].to_csv(
+        model_dir / "group_holdout_predictions.csv", index=False
+    )
+    scenario_frames["time_based_segmented_predictions"].to_csv(
+        model_dir / "time_holdout_predictions.csv", index=False
+    )
     feature_importance.to_csv(model_dir / "feature_importance.csv", index=False)
 
-    joblib.dump(pipeline, model_dir / f"{model_key}_random_forest_model.joblib")
-    joblib.dump(pipeline[:-1], model_dir / f"{model_key}_preprocessing_pipeline.joblib")
+    joblib.dump(model, model_dir / f"{model_key}_random_forest_model.joblib")
+    joblib.dump(
+        {
+            "feature_builder": getattr(model, "feature_builder_", None),
+            "feature_capper": getattr(model, "feature_capper_", None),
+            "preprocessor": getattr(model, "preprocessor_", None),
+        },
+        model_dir / f"{model_key}_preprocessing_pipeline.joblib",
+    )
 
     feature_metadata = {
         "model_key": model_key,
-        "raw_features": MODEL_SPECS[model_key].raw_features,
+        "raw_features": list(getattr(model, "feature_names_in_", MODEL_SPECS[model_key].raw_features)),
         "engineered_features": MODEL_SPECS[model_key].engineered_features,
         "transformed_features": feature_importance["feature"].tolist(),
     }
@@ -701,24 +965,30 @@ def save_model_artifacts(
 
     save_feature_importance_plot(feature_importance, model_dir / "feature_importance.png")
     save_actual_vs_predicted_plot(
-        group_holdout_predictions,
+        scenario_frames["group_holdout_segmented_predictions"],
         model_dir / "actual_vs_predicted.png",
         f"{MODEL_SPECS[model_key].name}: Team Holdout Actual vs Predicted",
     )
     save_residual_distribution_plot(
-        group_holdout_predictions, model_dir / "residual_distribution.png"
+        scenario_frames["group_holdout_segmented_predictions"],
+        model_dir / "residual_distribution.png",
     )
-    save_error_distribution_plot(group_holdout_predictions, model_dir / "error_distribution.png")
+    save_error_distribution_plot(
+        scenario_frames["group_holdout_segmented_predictions"],
+        model_dir / "error_distribution.png",
+    )
     save_actual_vs_predicted_plot(
-        time_holdout_predictions,
+        scenario_frames["time_based_segmented_predictions"],
         model_dir / "time_actual_vs_predicted.png",
         f"{MODEL_SPECS[model_key].name}: Time Split Actual vs Predicted",
     )
     save_residual_distribution_plot(
-        time_holdout_predictions, model_dir / "time_residual_distribution.png"
+        scenario_frames["time_based_segmented_predictions"],
+        model_dir / "time_residual_distribution.png",
     )
     save_error_distribution_plot(
-        time_holdout_predictions, model_dir / "time_error_distribution.png"
+        scenario_frames["time_based_segmented_predictions"],
+        model_dir / "time_error_distribution.png",
     )
 
 
@@ -761,17 +1031,48 @@ def enrich_prediction_frame_with_size_bands(
     return enriched, thresholds
 
 
-def evaluate_split(
+def compute_tail_metrics(
+    prediction_frame: pd.DataFrame, tail_threshold: float
+) -> dict[str, object]:
+    tail_frame = prediction_frame.loc[prediction_frame[TARGET_COLUMN] >= tail_threshold].copy()
+    if tail_frame.empty:
+        return {
+            "tail_threshold": tail_threshold,
+            "tail_row_count": 0,
+            "metrics": None,
+        }
+    tail_metrics = None
+    if len(tail_frame) >= 2:
+        tail_metrics = asdict(
+            compute_metrics(tail_frame[TARGET_COLUMN], tail_frame["predicted_sprint_cost"])
+        )
+    return {
+        "tail_threshold": tail_threshold,
+        "tail_row_count": int(len(tail_frame)),
+        "metrics": tail_metrics,
+    }
+
+
+def compute_metric_delta(
+    baseline_metrics: dict[str, float], segmented_metrics: dict[str, float]
+) -> dict[str, float]:
+    return {
+        "r2_delta": float(segmented_metrics["r2"] - baseline_metrics["r2"]),
+        "rmse_delta": float(segmented_metrics["rmse"] - baseline_metrics["rmse"]),
+        "mae_delta": float(segmented_metrics["mae"] - baseline_metrics["mae"]),
+        "mape_delta": float(segmented_metrics["mape"] - baseline_metrics["mape"]),
+    }
+
+
+def evaluate_estimator(
+    estimator,
     model_key: str,
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    random_state: int,
     cv_folds: int | None,
-    scenario_name: str,
+    evaluation_label: str,
 ) -> dict[str, object]:
     spec = MODEL_SPECS[model_key]
-    pipeline = build_training_pipeline(model_key=model_key, random_state=random_state)
-
     X_train = train_df[spec.raw_features].copy()
     y_train = train_df[TARGET_COLUMN].astype(float)
     X_test = test_df[spec.raw_features].copy()
@@ -780,17 +1081,16 @@ def evaluate_split(
     cv_results = None
     if cv_folds is not None:
         cv_results = cross_validate_model(
-            pipeline=pipeline,
+            estimator=estimator,
             X_train=X_train,
             y_train=y_train,
             groups=train_df[TEAM_COLUMN],
             cv_folds=cv_folds,
         )
 
-    pipeline.fit(X_train, y_train)
-    predictions = pipeline.predict(X_test)
+    estimator.fit(X_train, y_train)
+    predictions = estimator.predict(X_test)
     holdout_metrics = compute_metrics(y_test, predictions)
-
     holdout_predictions = build_prediction_frame(test_df, predictions)
     holdout_predictions, thresholds = enrich_prediction_frame_with_size_bands(
         holdout_predictions, train_df
@@ -799,9 +1099,11 @@ def evaluate_split(
     team_metrics = summarize_group_metrics(holdout_predictions, TEAM_COLUMN)
     size_metrics = summarize_group_metrics(holdout_predictions, "sprint_size_band")
     small_large_metrics = summarize_group_metrics(holdout_predictions, "small_vs_large")
+    tail_threshold = float(y_train.quantile(0.90))
+    tail_summary = compute_tail_metrics(holdout_predictions, tail_threshold)
 
     return {
-        "scenario_name": scenario_name,
+        "evaluation_label": evaluation_label,
         "train_rows": int(len(train_df)),
         "test_rows": int(len(test_df)),
         "cross_validation": cv_results,
@@ -810,8 +1112,160 @@ def evaluate_split(
         "sprint_size_error_summary": size_metrics.to_dict(orient="records"),
         "small_vs_large_error_summary": small_large_metrics.to_dict(orient="records"),
         "size_band_thresholds": thresholds,
+        "tail_summary": tail_summary,
         "predictions": holdout_predictions,
+        "estimator": estimator,
     }
+
+
+def evaluate_split(
+    model_key: str,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    random_state: int,
+    cv_folds: int | None,
+    scenario_name: str,
+) -> dict[str, object]:
+    baseline_evaluation = evaluate_estimator(
+        estimator=build_baseline_estimator(model_key=model_key, random_state=random_state),
+        model_key=model_key,
+        train_df=train_df,
+        test_df=test_df,
+        cv_folds=cv_folds,
+        evaluation_label="baseline",
+    )
+    segmented_evaluation = evaluate_estimator(
+        estimator=build_segmented_estimator(model_key=model_key, random_state=random_state),
+        model_key=model_key,
+        train_df=train_df,
+        test_df=test_df,
+        cv_folds=cv_folds,
+        evaluation_label="segmented",
+    )
+
+    comparison_frame = baseline_evaluation["predictions"].merge(
+        segmented_evaluation["predictions"][
+            [
+                TEAM_COLUMN,
+                "sprint_id",
+                TARGET_COLUMN,
+                "predicted_sprint_cost",
+                "absolute_error",
+                "absolute_percentage_error",
+            ]
+        ].rename(
+            columns={
+                "predicted_sprint_cost": "segmented_predicted_sprint_cost",
+                "absolute_error": "segmented_absolute_error",
+                "absolute_percentage_error": "segmented_absolute_percentage_error",
+            }
+        ),
+        on=[TEAM_COLUMN, "sprint_id", TARGET_COLUMN],
+        how="inner",
+    )
+    comparison_frame = comparison_frame.rename(
+        columns={
+            "predicted_sprint_cost": "baseline_predicted_sprint_cost",
+            "absolute_error": "baseline_absolute_error",
+            "absolute_percentage_error": "baseline_absolute_percentage_error",
+        }
+    )
+    comparison_frame["absolute_error_improvement"] = (
+        comparison_frame["baseline_absolute_error"]
+        - comparison_frame["segmented_absolute_error"]
+    )
+    comparison_frame["absolute_percentage_error_improvement"] = (
+        comparison_frame["baseline_absolute_percentage_error"]
+        - comparison_frame["segmented_absolute_percentage_error"]
+    )
+    comparison_frame["segmented_beats_baseline"] = (
+        comparison_frame["absolute_error_improvement"] > 0
+    )
+
+    comparison_summary = {
+        "metric_delta": compute_metric_delta(
+            baseline_evaluation["holdout_metrics"],
+            segmented_evaluation["holdout_metrics"],
+        ),
+        "row_level": {
+            "comparison_rows": int(len(comparison_frame)),
+            "segmented_better_rate": float(comparison_frame["segmented_beats_baseline"].mean()),
+            "average_absolute_error_improvement": float(
+                comparison_frame["absolute_error_improvement"].mean()
+            ),
+            "median_absolute_error_improvement": float(
+                comparison_frame["absolute_error_improvement"].median()
+            ),
+        },
+        "tail_metric_delta": compute_metric_delta(
+            baseline_evaluation["tail_summary"]["metrics"],
+            segmented_evaluation["tail_summary"]["metrics"],
+        )
+        if baseline_evaluation["tail_summary"]["metrics"] is not None
+        and segmented_evaluation["tail_summary"]["metrics"] is not None
+        else None,
+    }
+
+    return {
+        "scenario_name": scenario_name,
+        "train_rows": int(len(train_df)),
+        "test_rows": int(len(test_df)),
+        "baseline": baseline_evaluation,
+        "segmented": segmented_evaluation,
+        "comparison_frame": comparison_frame,
+        "comparison_summary": comparison_summary,
+    }
+
+
+def build_mid_vs_initial_comparison(
+    initial_predictions: pd.DataFrame,
+    mid_predictions: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    merged = initial_predictions.merge(
+        mid_predictions[
+            [
+                TEAM_COLUMN,
+                "sprint_id",
+                TARGET_COLUMN,
+                "predicted_sprint_cost",
+                "absolute_error",
+                "absolute_percentage_error",
+            ]
+        ].rename(
+            columns={
+                "predicted_sprint_cost": "mid_predicted_sprint_cost",
+                "absolute_error": "mid_absolute_error",
+                "absolute_percentage_error": "mid_absolute_percentage_error",
+            }
+        ),
+        on=[TEAM_COLUMN, "sprint_id", TARGET_COLUMN],
+        how="inner",
+    )
+    merged = merged.rename(
+        columns={
+            "predicted_sprint_cost": "initial_predicted_sprint_cost",
+            "absolute_error": "initial_absolute_error",
+            "absolute_percentage_error": "initial_absolute_percentage_error",
+        }
+    )
+    merged["mid_absolute_error_improvement"] = (
+        merged["initial_absolute_error"] - merged["mid_absolute_error"]
+    )
+    merged["mid_percentage_error_improvement"] = (
+        merged["initial_absolute_percentage_error"] - merged["mid_absolute_percentage_error"]
+    )
+    merged["mid_beats_initial"] = merged["mid_absolute_error_improvement"] > 0
+    summary = {
+        "comparison_rows": int(len(merged)),
+        "mid_better_rate": float(merged["mid_beats_initial"].mean()),
+        "average_absolute_error_improvement": float(
+            merged["mid_absolute_error_improvement"].mean()
+        ),
+        "median_absolute_error_improvement": float(
+            merged["mid_absolute_error_improvement"].median()
+        ),
+    }
+    return merged, summary
 
 
 def train_models(
@@ -841,6 +1295,10 @@ def train_models(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     model_summaries = []
+    segmented_predictions_by_model: dict[str, dict[str, pd.DataFrame]] = {
+        "group_holdout": {},
+        "time_based": {},
+    }
     for model_key in ("initial", "mid"):
         group_evaluation = evaluate_split(
             model_key=model_key,
@@ -860,13 +1318,21 @@ def train_models(
         )
 
         spec = MODEL_SPECS[model_key]
-        final_pipeline = build_training_pipeline(model_key=model_key, random_state=random_state)
-        final_pipeline.fit(
+        final_model = build_segmented_estimator(model_key=model_key, random_state=random_state)
+        final_model.fit(
             cleaned_df[spec.raw_features], cleaned_df[TARGET_COLUMN].astype(float)
         )
-        feature_importance = extract_feature_importance(final_pipeline)
+        feature_importance = extract_feature_importance(final_model)
         model_dir = output_dir / f"{model_key}_model"
-        feature_capper = final_pipeline.named_steps["feature_capper"]
+        feature_capper = getattr(final_model, "feature_capper_", None)
+        scenario_frames = {
+            "group_holdout_baseline_predictions": group_evaluation["baseline"]["predictions"],
+            "group_holdout_segmented_predictions": group_evaluation["segmented"]["predictions"],
+            "group_holdout_comparison": group_evaluation["comparison_frame"],
+            "time_based_baseline_predictions": time_evaluation["baseline"]["predictions"],
+            "time_based_segmented_predictions": time_evaluation["segmented"]["predictions"],
+            "time_based_comparison": time_evaluation["comparison_frame"],
+        }
         metrics_payload = {
             "model_key": model_key,
             "model_name": spec.name,
@@ -877,49 +1343,115 @@ def train_models(
                 "group_holdout": {
                     "training_rows": group_evaluation["train_rows"],
                     "holdout_rows": group_evaluation["test_rows"],
-                    "cross_validation": group_evaluation["cross_validation"],
-                    "holdout_metrics": group_evaluation["holdout_metrics"],
-                    "team_error_summary": group_evaluation["team_error_summary"],
-                    "sprint_size_error_summary": group_evaluation["sprint_size_error_summary"],
-                    "small_vs_large_error_summary": group_evaluation[
-                        "small_vs_large_error_summary"
-                    ],
-                    "size_band_thresholds": group_evaluation["size_band_thresholds"],
+                    "baseline": {
+                        "cross_validation": group_evaluation["baseline"]["cross_validation"],
+                        "holdout_metrics": group_evaluation["baseline"]["holdout_metrics"],
+                        "team_error_summary": group_evaluation["baseline"]["team_error_summary"],
+                        "sprint_size_error_summary": group_evaluation["baseline"]["sprint_size_error_summary"],
+                        "small_vs_large_error_summary": group_evaluation["baseline"][
+                            "small_vs_large_error_summary"
+                        ],
+                        "size_band_thresholds": group_evaluation["baseline"]["size_band_thresholds"],
+                        "tail_summary": group_evaluation["baseline"]["tail_summary"],
+                    },
+                    "segmented": {
+                        "cross_validation": group_evaluation["segmented"]["cross_validation"],
+                        "holdout_metrics": group_evaluation["segmented"]["holdout_metrics"],
+                        "team_error_summary": group_evaluation["segmented"]["team_error_summary"],
+                        "sprint_size_error_summary": group_evaluation["segmented"]["sprint_size_error_summary"],
+                        "small_vs_large_error_summary": group_evaluation["segmented"][
+                            "small_vs_large_error_summary"
+                        ],
+                        "size_band_thresholds": group_evaluation["segmented"]["size_band_thresholds"],
+                        "tail_summary": group_evaluation["segmented"]["tail_summary"],
+                    },
+                    "comparison_summary": group_evaluation["comparison_summary"],
                 },
                 "time_based": {
                     "training_rows": time_evaluation["train_rows"],
                     "holdout_rows": time_evaluation["test_rows"],
-                    "cross_validation": time_evaluation["cross_validation"],
-                    "holdout_metrics": time_evaluation["holdout_metrics"],
-                    "team_error_summary": time_evaluation["team_error_summary"],
-                    "sprint_size_error_summary": time_evaluation["sprint_size_error_summary"],
-                    "small_vs_large_error_summary": time_evaluation[
-                        "small_vs_large_error_summary"
-                    ],
-                    "size_band_thresholds": time_evaluation["size_band_thresholds"],
+                    "baseline": {
+                        "cross_validation": time_evaluation["baseline"]["cross_validation"],
+                        "holdout_metrics": time_evaluation["baseline"]["holdout_metrics"],
+                        "team_error_summary": time_evaluation["baseline"]["team_error_summary"],
+                        "sprint_size_error_summary": time_evaluation["baseline"]["sprint_size_error_summary"],
+                        "small_vs_large_error_summary": time_evaluation["baseline"][
+                            "small_vs_large_error_summary"
+                        ],
+                        "size_band_thresholds": time_evaluation["baseline"]["size_band_thresholds"],
+                        "tail_summary": time_evaluation["baseline"]["tail_summary"],
+                    },
+                    "segmented": {
+                        "cross_validation": time_evaluation["segmented"]["cross_validation"],
+                        "holdout_metrics": time_evaluation["segmented"]["holdout_metrics"],
+                        "team_error_summary": time_evaluation["segmented"]["team_error_summary"],
+                        "sprint_size_error_summary": time_evaluation["segmented"]["sprint_size_error_summary"],
+                        "small_vs_large_error_summary": time_evaluation["segmented"][
+                            "small_vs_large_error_summary"
+                        ],
+                        "size_band_thresholds": time_evaluation["segmented"]["size_band_thresholds"],
+                        "tail_summary": time_evaluation["segmented"]["tail_summary"],
+                    },
+                    "comparison_summary": time_evaluation["comparison_summary"],
                 },
             },
-            "feature_outlier_caps": getattr(feature_capper, "bounds_", {}),
+            "feature_outlier_caps": getattr(feature_capper, "bounds_", {}) if feature_capper else {},
             "target_transform": "log1p_only_no_target_clipping",
+            "sample_weight_strategy": {
+                "q80_weight": 2.0,
+                "q95_weight": 4.0,
+            },
+            "segmentation_summary": getattr(final_model, "segment_summary_", None),
         }
         save_model_artifacts(
             model_dir=model_dir,
             model_key=model_key,
-            pipeline=final_pipeline,
+            model=final_model,
             feature_importance=feature_importance,
-            group_holdout_predictions=group_evaluation["predictions"],
-            time_holdout_predictions=time_evaluation["predictions"],
+            scenario_frames=scenario_frames,
             metrics_payload=metrics_payload,
         )
+        segmented_predictions_by_model["group_holdout"][model_key] = group_evaluation["segmented"][
+            "predictions"
+        ]
+        segmented_predictions_by_model["time_based"][model_key] = time_evaluation["segmented"][
+            "predictions"
+        ]
         model_summaries.append(
             {
                 "model_key": model_key,
                 "model_name": spec.name,
                 "artifact_dir": str(model_dir),
-                "group_holdout": group_evaluation["holdout_metrics"],
-                "time_based": time_evaluation["holdout_metrics"],
+                "group_holdout_baseline": group_evaluation["baseline"]["holdout_metrics"],
+                "group_holdout_segmented": group_evaluation["segmented"]["holdout_metrics"],
+                "time_based_baseline": time_evaluation["baseline"]["holdout_metrics"],
+                "time_based_segmented": time_evaluation["segmented"]["holdout_metrics"],
             }
         )
+
+    group_mid_vs_initial_df, group_mid_vs_initial_summary = build_mid_vs_initial_comparison(
+        segmented_predictions_by_model["group_holdout"]["initial"],
+        segmented_predictions_by_model["group_holdout"]["mid"],
+    )
+    time_mid_vs_initial_df, time_mid_vs_initial_summary = build_mid_vs_initial_comparison(
+        segmented_predictions_by_model["time_based"]["initial"],
+        segmented_predictions_by_model["time_based"]["mid"],
+    )
+    group_mid_vs_initial_df.to_csv(
+        output_dir / "group_holdout_mid_vs_initial_comparison.csv", index=False
+    )
+    time_mid_vs_initial_df.to_csv(
+        output_dir / "time_based_mid_vs_initial_comparison.csv", index=False
+    )
+    (output_dir / "mid_vs_initial_summary.json").write_text(
+        json.dumps(
+            {
+                "group_holdout": group_mid_vs_initial_summary,
+                "time_based": time_mid_vs_initial_summary,
+            },
+            indent=2,
+        )
+    )
 
     summary_payload = {
         "data_path": str(data_path),
@@ -930,6 +1462,10 @@ def train_models(
         "group_split_report": group_split_report,
         "time_split_report": time_split_report,
         "models": model_summaries,
+        "mid_vs_initial": {
+            "group_holdout": group_mid_vs_initial_summary,
+            "time_based": time_mid_vs_initial_summary,
+        },
     }
     (output_dir / "training_summary.json").write_text(json.dumps(summary_payload, indent=2))
 
@@ -938,8 +1474,8 @@ def train_models(
     for summary in model_summaries:
         print(
             f"{summary['model_name']} -> "
-            f"group holdout R^2: {summary['group_holdout']['r2']:.4f}, "
-            f"time split R^2: {summary['time_based']['r2']:.4f}"
+            f"group segmented R^2: {summary['group_holdout_segmented']['r2']:.4f}, "
+            f"time segmented R^2: {summary['time_based_segmented']['r2']:.4f}"
         )
 
 

@@ -1,0 +1,14 @@
+{
+  "group_holdout": {
+    "comparison_rows": 654,
+    "mid_better_rate": 0.5336391437308868,
+    "average_absolute_error_improvement": 392.5408270690721,
+    "median_absolute_error_improvement": 11.60957447941854
+  },
+  "time_based": {
+    "comparison_rows": 709,
+    "mid_better_rate": 0.5162200282087447,
+    "average_absolute_error_improvement": 111.29675371212926,
+    "median_absolute_error_improvement": 10.064638836628887
+  }
+}

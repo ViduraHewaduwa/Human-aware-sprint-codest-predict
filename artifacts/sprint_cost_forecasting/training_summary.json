@@ -51,35 +51,73 @@
       "model_key": "initial",
       "model_name": "Initial Sprint Cost Estimation",
       "artifact_dir": "artifacts/sprint_cost_forecasting/initial_model",
-      "group_holdout": {
-        "r2": 0.14999106327566358,
-        "rmse": 100006.46292155967,
-        "mae": 30241.30008767981,
-        "mape": 207.13335261096356
+      "group_holdout_baseline": {
+        "r2": 0.14051737508302609,
+        "rmse": 100562.22459908701,
+        "mae": 30317.552727151047,
+        "mape": 205.15361924638026
       },
-      "time_based": {
-        "r2": 0.24397681343987287,
-        "rmse": 58778.32029017283,
-        "mae": 22311.886234783742,
-        "mape": 101.40632197219463
+      "group_holdout_segmented": {
+        "r2": 0.11904907647725516,
+        "rmse": 101810.40824527698,
+        "mae": 30690.314912447273,
+        "mape": 205.87248811127208
+      },
+      "time_based_baseline": {
+        "r2": 0.3001987585296897,
+        "rmse": 56550.56753353997,
+        "mae": 21880.00059623572,
+        "mape": 108.46334279793612
+      },
+      "time_based_segmented": {
+        "r2": 0.2699645192439549,
+        "rmse": 57759.25693806978,
+        "mae": 22390.206922188692,
+        "mape": 108.83714816906722
       }
     },
     {
       "model_key": "mid",
       "model_name": "Mid-Sprint Cost Update",
       "artifact_dir": "artifacts/sprint_cost_forecasting/mid_model",
-      "group_holdout": {
-        "r2": 0.15948755962008,
-        "rmse": 99446.24614727435,
-        "mae": 30138.72567557729,
-        "mape": 201.5100819241467
+      "group_holdout_baseline": {
+        "r2": 0.16949669232810916,
+        "rmse": 98852.35145041462,
+        "mae": 29946.21234845792,
+        "mape": 204.18510697157356
       },
-      "time_based": {
-        "r2": 0.2505756760785518,
-        "rmse": 58521.23813145443,
-        "mae": 22223.14915721401,
-        "mape": 98.80028202093342
+      "group_holdout_segmented": {
+        "r2": 0.15439649386876175,
+        "rmse": 99746.96925896456,
+        "mae": 30297.7740853782,
+        "mape": 205.3948652733368
+      },
+      "time_based_baseline": {
+        "r2": 0.30217949866613614,
+        "rmse": 56470.47954200441,
+        "mae": 21817.165698478537,
+        "mape": 105.6205334830261
+      },
+      "time_based_segmented": {
+        "r2": 0.2730003493123512,
+        "rmse": 57639.03677914361,
+        "mae": 22278.910168476566,
+        "mape": 105.99040162984592
       }
     }
-  ]
+  ],
+  "mid_vs_initial": {
+    "group_holdout": {
+      "comparison_rows": 654,
+      "mid_better_rate": 0.5336391437308868,
+      "average_absolute_error_improvement": 392.5408270690721,
+      "median_absolute_error_improvement": 11.60957447941854
+    },
+    "time_based": {
+      "comparison_rows": 709,
+      "mid_better_rate": 0.5162200282087447,
+      "average_absolute_error_improvement": 111.29675371212926,
+      "median_absolute_error_improvement": 10.064638836628887
+    }
+  }
 }
