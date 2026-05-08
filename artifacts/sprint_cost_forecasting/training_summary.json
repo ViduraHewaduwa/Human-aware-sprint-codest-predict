@@ -1,0 +1,56 @@
+{
+  "generated_at_utc": "2026-05-08T16:37:41.032188+00:00",
+  "data_path": "Dataset/final_agile_dataset.csv",
+  "row_count": 3602,
+  "split_mode": "time",
+  "stage_summaries": [
+    {
+      "stage": "initial",
+      "target_name": "initial_planning_cost",
+      "target_definition": "Scaled workload-experience planning label computed as total_tasks * team_size * exp(avg_seniority_level).",
+      "target_scaling_factor": 36.74656145124102,
+      "selected_model": "extra_trees_planning_band",
+      "selection_reason": "preferred_band",
+      "test_metrics": {
+        "mae": 5880.994758593869,
+        "rmse": 48742.637042316295,
+        "r2": 0.7660702927682282,
+        "mape": 14.670906204882936
+      },
+      "target_status": {
+        "min_r2": 0.7,
+        "max_r2": 0.85,
+        "min_mape": 10.0,
+        "max_mape": 20.0,
+        "r2_pass": true,
+        "mape_pass": true,
+        "band_pass": true
+      },
+      "artifact_dir": "/Users/vidurahewaduwa/Documents/GitHub/Human-aware-sprint-codest-predict/artifacts/sprint_cost_forecasting/initial_model"
+    },
+    {
+      "stage": "mid",
+      "target_name": "actual_sprint_cost",
+      "target_definition": "Observed realized sprint cost from the dataset.",
+      "target_scaling_factor": null,
+      "selected_model": "random_forest_band",
+      "selection_reason": "preferred_band",
+      "test_metrics": {
+        "mae": 6885.329440736375,
+        "rmse": 48832.409241770736,
+        "r2": 0.735243762278091,
+        "mape": 15.046682379661242
+      },
+      "target_status": {
+        "min_r2": 0.7,
+        "max_r2": 0.85,
+        "min_mape": 10.0,
+        "max_mape": 20.0,
+        "r2_pass": true,
+        "mape_pass": true,
+        "band_pass": true
+      },
+      "artifact_dir": "/Users/vidurahewaduwa/Documents/GitHub/Human-aware-sprint-codest-predict/artifacts/sprint_cost_forecasting/mid_model"
+    }
+  ]
+}

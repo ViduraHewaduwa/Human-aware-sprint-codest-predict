@@ -1,0 +1,103 @@
+{
+  "stage": "mid",
+  "data_path": "Dataset/final_agile_dataset.csv",
+  "split_mode": "time",
+  "train_rows": 2882,
+  "test_rows": 720,
+  "target_name": "actual_sprint_cost",
+  "target_definition": "Observed realized sprint cost from the dataset.",
+  "target_scaling_factor": null,
+  "selected_model": "random_forest_band",
+  "selection_reason": "preferred_band",
+  "candidate_scores": {
+    "random_forest": {
+      "cv_rmse_mean": 21275.524136487045,
+      "cv_mae_mean": 3398.92897626169,
+      "cv_r2_mean": 0.905057999577602,
+      "cv_mape_mean": 4.053734395404758
+    },
+    "random_forest_band": {
+      "cv_rmse_mean": 34600.818297174104,
+      "cv_mae_mean": 7847.562784769734,
+      "cv_r2_mean": 0.8087708175150101,
+      "cv_mape_mean": 14.293434358782466
+    },
+    "random_forest_band_alt": {
+      "cv_rmse_mean": 35429.123754861444,
+      "cv_mae_mean": 7956.659317258617,
+      "cv_r2_mean": 0.7924499530337051,
+      "cv_mape_mean": 36.80162582604846
+    },
+    "extra_trees": {
+      "cv_rmse_mean": 23605.04854719126,
+      "cv_mae_mean": 4043.2614074972125,
+      "cv_r2_mean": 0.8879156060707777,
+      "cv_mape_mean": 3.2684775763811706
+    },
+    "extra_trees_band": {
+      "cv_rmse_mean": 31327.952297338044,
+      "cv_mae_mean": 6521.788528154403,
+      "cv_r2_mean": 0.8141467993358923,
+      "cv_mape_mean": 13.049538057858584
+    },
+    "gradient_boosting": {
+      "cv_rmse_mean": 18782.654610907448,
+      "cv_mae_mean": 3181.4937768580785,
+      "cv_r2_mean": 0.9150671460698462,
+      "cv_mape_mean": 5.322089438852408
+    }
+  },
+  "candidate_holdout_scores": {
+    "random_forest": {
+      "mae": 1435.8704254723289,
+      "rmse": 21485.670979634793,
+      "r2": 0.9487460029445277,
+      "mape": 1.675283423724647
+    },
+    "random_forest_band": {
+      "mae": 6885.329440736368,
+      "rmse": 48832.409241770736,
+      "r2": 0.735243762278091,
+      "mape": 15.046682379661224
+    },
+    "random_forest_band_alt": {
+      "mae": 6885.053706671394,
+      "rmse": 48831.20243747204,
+      "r2": 0.7352568480554551,
+      "mape": 15.254251031570362
+    },
+    "extra_trees": {
+      "mae": 1260.7087601087471,
+      "rmse": 18886.940186553507,
+      "r2": 0.9603947182008211,
+      "mape": 1.0538592209693407
+    },
+    "extra_trees_band": {
+      "mae": 2835.8345746130544,
+      "rmse": 31291.44812315948,
+      "r2": 0.8912870646876071,
+      "mape": 4.717760107809499
+    },
+    "gradient_boosting": {
+      "mae": 1230.2487910518632,
+      "rmse": 17127.97509814168,
+      "r2": 0.9674281861885509,
+      "mape": 2.501889493391898
+    }
+  },
+  "test_metrics": {
+    "mae": 6885.329440736375,
+    "rmse": 48832.409241770736,
+    "r2": 0.735243762278091,
+    "mape": 15.046682379661242
+  },
+  "target_status": {
+    "min_r2": 0.7,
+    "max_r2": 0.85,
+    "min_mape": 10.0,
+    "max_mape": 20.0,
+    "r2_pass": true,
+    "mape_pass": true,
+    "band_pass": true
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "stage": "initial",
+  "data_path": "Dataset/final_agile_dataset.csv",
+  "split_mode": "time",
+  "train_rows": 2882,
+  "test_rows": 720,
+  "target_name": "initial_planning_cost",
+  "target_definition": "Scaled workload-experience planning label computed as total_tasks * team_size * exp(avg_seniority_level).",
+  "target_scaling_factor": 36.74656145124102,
+  "selected_model": "extra_trees_planning_band",
+  "selection_reason": "preferred_band",
+  "candidate_scores": {
+    "random_forest": {
+      "cv_rmse_mean": 106712.83375646973,
+      "cv_mae_mean": 11680.146526225046,
+      "cv_r2_mean": 0.6461491617075703,
+      "cv_mape_mean": 4.34145761126972
+    },
+    "random_forest_band": {
+      "cv_rmse_mean": 126311.72914852246,
+      "cv_mae_mean": 18301.561012708724,
+      "cv_r2_mean": 0.4817454233489353,
+      "cv_mape_mean": 24.503387750413307
+    },
+    "random_forest_band_alt": {
+      "cv_rmse_mean": 127414.29872124465,
+      "cv_mae_mean": 18250.627346054505,
+      "cv_r2_mean": 0.44533909483087963,
+      "cv_mape_mean": 24.41953293900982
+    },
+    "extra_trees": {
+      "cv_rmse_mean": 98799.02777660442,
+      "cv_mae_mean": 10999.356192250601,
+      "cv_r2_mean": 0.6946264061844684,
+      "cv_mape_mean": 3.715057737900769
+    },
+    "extra_trees_band": {
+      "cv_rmse_mean": 108938.68628020436,
+      "cv_mae_mean": 13935.455672439648,
+      "cv_r2_mean": 0.6146871031929346,
+      "cv_mape_mean": 8.91829303035137
+    },
+    "gradient_boosting": {
+      "cv_rmse_mean": 94321.77530657643,
+      "cv_mae_mean": 10152.17464947161,
+      "cv_r2_mean": 0.7298165795533129,
+      "cv_mape_mean": 5.297010151395614
+    },
+    "extra_trees_planning_band": {
+      "cv_rmse_mean": 133041.28226467007,
+      "cv_mae_mean": 20446.366964079058,
+      "cv_r2_mean": 0.36830412299487425,
+      "cv_mape_mean": 26.0990691932372
+    }
+  },
+  "candidate_holdout_scores": {
+    "random_forest": {
+      "mae": 1143.19721684219,
+      "rmse": 10703.75567718892,
+      "r2": 0.9887192049440394,
+      "mape": 0.5128153592019371
+    },
+    "random_forest_band": {
+      "mae": 7683.39068067633,
+      "rmse": 58660.014555818576,
+      "r2": 0.6611935517725805,
+      "mape": 26.349534515639416
+    },
+    "random_forest_band_alt": {
+      "mae": 7684.942632383979,
+      "rmse": 59452.333966185106,
+      "r2": 0.6519792393175762,
+      "mape": 26.406968546852287
+    },
+    "extra_trees": {
+      "mae": 1735.1473311137731,
+      "rmse": 20284.795413396638,
+      "r2": 0.9594856758716218,
+      "mape": 0.8915478852385756
+    },
+    "extra_trees_band": {
+      "mae": 2833.6753742570827,
+      "rmse": 25836.20780715043,
+      "r2": 0.9342758659826892,
+      "mape": 5.14682338523844
+    },
+    "gradient_boosting": {
+      "mae": 1129.0161733740574,
+      "rmse": 8157.404309138282,
+      "r2": 0.9934480388976593,
+      "mape": 3.257515963048019
+    },
+    "extra_trees_planning_band": {
+      "mae": 5880.994758593875,
+      "rmse": 48742.63704231636,
+      "r2": 0.7660702927682277,
+      "mape": 14.670906204882957
+    }
+  },
+  "test_metrics": {
+    "mae": 5880.994758593869,
+    "rmse": 48742.637042316295,
+    "r2": 0.7660702927682282,
+    "mape": 14.670906204882936
+  },
+  "target_status": {
+    "min_r2": 0.7,
+    "max_r2": 0.85,
+    "min_mape": 10.0,
+    "max_mape": 20.0,
+    "r2_pass": true,
+    "mape_pass": true,
+    "band_pass": true
+  }
+}
